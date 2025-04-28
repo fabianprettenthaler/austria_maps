@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Austrian Municipalities Guessing Game</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.2/css/bootstrap.min.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+    <style>
+        body {
+            padding: 20px;
+            font-family: Arial, sans-serif;
+        }
+        #map-container {
+            position: relative;
+            width: 100%;
+            height: 700px;
+            overflow: hidden;
+        }
+        .guess-input {
+            font-size: 16px;
+            padding: 8px;
+            width: 100%;
+        }
+        .submit-btn {
+            margin-top: 10px;
+            width: 100%;
+            font-size: 16px;
+            padding: 8px;
+        }
+        .guessed-list {
+            max-height: 300px;
+            overflow-y: auto;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            padding: 10px;
+            margin-top: 10px;
+        }
+        .municipality {
+            fill: lightgray;
+            stroke: white;
+            stroke-width: 0.1;
+        }
+        .municipality.guessed {
+            fill: forestgreen;
+        }
+        .loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            background-color: rgba(255, 255, 255, 0.8);
+            padding: 20px;
+            border-radius: 5px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+            z-index: 1000;
+        }
+    </style>
+</head>
+<body>
+    <div class="container-fluid">
+        <h1 class="text-center mb-4">Austrian Municipalities Guessing Game</h1>
+        <div class="row">
+            <div class="col-md-3">
+                <div class="card mb-3">
+                    <div class="card-body">
+                        <div class="mb-3">
+                            <label for="guessInput" class="form-label">Enter an Austrian municipality:</label>
+                            <input type="text" id="guessInput" class="form-control guess-input" placeholder="e.g., Weyer">
+                            <button id="submitGuess" class="btn btn-primary submit-btn">Submit Guess</button>
+                        </div>
+                        
+                        <hr>
+                        <h4>Your Progress</h4>
+                        <div class="progress mb-2">
+                            <div id="progressBar" class="progress-bar bg-success" role="progressbar" style="width: 0%">0%</div>
+                        </div>
+                        <p>Population covered: <span id="populationCovered">0</span> out of <span id="totalPopulation">0</span></p>
+                        
+                        <hr>
+                        <h4>Correctly Guessed Municipalities</h4>
+                        <div class="guessed-list" id="guessedCitiesList">
+                            <p>None yet. Start guessing!</p>
+                        </div>
+                        
+                        <hr>
+                        <button id="resetGame" class="btn btn-danger submit-btn">Reset Game</button>
+                        <hr>
+                        <p class="text-muted small">Try to guess as many Austrian municipalities as possible. 
+                        Each correct guess will fill in the corresponding area on the map. Vienna is special. Its always Wien-Bezirkname.</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-9">
+                <div id="map-container">
+                    <div id="loading" class="loading">
+                        <div class="spinner-border text-primary" role="status">
+                            <span class="visually-hidden">Loading...</span>
+                        </div>
+                        <p class="mt-2">Loading map data...</p>
+                    </div>
+                    <svg id="austriaMap" width="100%" height="100%"></svg>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Game state
+        const gameState = {
+            guessedMunicipalities: [],
+            populationCovered: 0,
+            percentageCovered: 0,
+            totalPopulation: 0
+        };
+
+        // Store data
+        let austriaData = null;
+        let populationData = null;
+
+        // Map variables
+        const svg = d3.select("#austriaMap");
+        const width = document.getElementById("map-container").clientWidth;
+        const height = document.getElementById("map-container").clientHeight;
+        let projection, path, g;
+
+        // Load the data
+        async function loadData() {
+            try {
+                // In a real implementation, you would load your actual data here
+                // Load GeoJSON data
+                const geoResponse = await fetch('STATISTIK_AUSTRIA_GEM_20250101.geojson');
+                austriaData = await geoResponse.json();
+                
+                // Load population data
+                const popResponse = await fetch('bevölkerungsstand.json');
+                populationData = await popResponse.json();
+
+                // Process population data - handle special cases as in R code
+                populationData = populationData.map(item => {
+                    if (item.Name === "Lenzing") {
+                        return { ...item, Name: "Lenzing an der Ager" };
+                    }
+                    else if (item.Name === "Fürstenfeld") {
+                        return { ...item, ID: "62280" };
+                    }
+                    else if (item.Name === "Söchau") {
+                        return null; // Will be filtered out
+                    }
+                    return item;
+                }).filter(item => item !== null);
+
+                // Calculate total population
+                gameState.totalPopulation = populationData.reduce((sum, item) => sum + parseInt(item.Wert), 0);
+                document.getElementById('totalPopulation').textContent = gameState.totalPopulation.toLocaleString();
+
+                // Merge data
+                mergeDataAndInitializeMap();
+            } catch (error) {
+                console.error("Error loading data: ", error);
+                document.getElementById('loading').innerHTML = `
+                    <div class="alert alert-danger" role="alert">
+                        Error loading data. Please check your files or try again later.
+                    </div>
+                `;
+                // Create demo data for testing
+                createDemoData();
+            }
+        }
+
+        function createDemoData() {
+            // Create sample data for demo purposes
+            console.log("Creating demo data for testing");
+            
+            // Create a simplified Austria outline
+            austriaData = {
+                type: "FeatureCollection",
+                features: [
+                    {
+                        type: "Feature",
+                        properties: {
+                            g_id: "10001",
+                            Name: "Wien"
+                        },
+                        geometry: {
+                            type: "Polygon",
+                            coordinates: [[[16.2, 48.1], [16.6, 48.1], [16.6, 48.3], [16.2, 48.3], [16.2, 48.1]]]
+                        }
+                    },
+                    {
+                        type: "Feature",
+                        properties: {
+                            g_id: "50101",
+                            Name: "Salzburg"
+                        },
+                        geometry: {
+                            type: "Polygon",
+                            coordinates: [[[13.0, 47.7], [13.2, 47.7], [13.2, 47.9], [13.0, 47.9], [13.0, 47.7]]]
+                        }
+                    },
+                    {
+                        type: "Feature",
+                        properties: {
+                            g_id: "60101",
+                            Name: "Graz"
+                        },
+                        geometry: {
+                            type: "Polygon",
+                            coordinates: [[[15.3, 47.0], [15.5, 47.0], [15.5, 47.2], [15.3, 47.2], [15.3, 47.0]]]
+                        }
+                    }
+                ]
+            };
+            
+            // Create sample population data
+            populationData = [
+                { ID: "10001", Name: "Wien", Wert: 1900000 },
+                { ID: "50101", Name: "Salzburg", Wert: 155000 },
+                { ID: "60101", Name: "Graz", Wert: 290000 }
+            ];
+            
+            // Set total population
+            gameState.totalPopulation = populationData.reduce((sum, item) => sum + item.Wert, 0);
+            document.getElementById('totalPopulation').textContent = gameState.totalPopulation.toLocaleString();
+            
+            // Merge data and initialize map
+            mergeDataAndInitializeMap();
+        }
+
+        // Merge GeoJSON and population data
+        function mergeDataAndInitializeMap() {
+            // Merge data
+            austriaData.features.forEach(feature => {
+                const gId = feature.properties.g_id;
+                const popItem = populationData.find(item => item.ID === gId);
+                
+                if (popItem) {
+                    feature.properties.population = parseInt(popItem.Wert);
+                    // If name is missing in GeoJSON, use the one from population data
+                    if (!feature.properties.Name && popItem.Name) {
+                        feature.properties.Name = popItem.Name;
+                    }
+                }
+                
+                feature.properties.status = "Not Guessed";
+            });
+            
+            // Initialize map
+            initializeMap();
+        }
+
+        // Initialize D3 map
+        function initializeMap() {
+            // Hide loading indicator
+            document.getElementById('loading').style.display = 'none';
+            
+            // Set up projection
+            projection = d3.geoMercator().fitSize([width, height], austriaData);
+            path = d3.geoPath().projection(projection);
+            
+            // Clear SVG
+            svg.selectAll("*").remove();
+            
+            // Create map group
+            g = svg.append("g");
+            
+            // Draw municipalities
+            g.selectAll("path")
+                .data(austriaData.features)
+                .enter()
+                .append("path")
+                .attr("d", path)
+                .attr("class", d => `municipality ${d.properties.status === "Guessed" ? "guessed" : ""}`)
+                .attr("id", d => `municipality-${d.properties.g_id}`)
+                .append("title")
+                .text(d => d.properties.Name);
+            
+            // Add title
+            svg.append("text")
+                .attr("x", width / 2)
+                .attr("y", 30)
+                .attr("text-anchor", "middle")
+                .style("font-size", "20px")
+                .style("font-weight", "bold")
+                .text("Austrian Municipalities");
+        }
+
+        // Update map when guess is correct
+        function updateMap() {
+            g.selectAll("path")
+                .data(austriaData.features)
+                .attr("class", d => `municipality ${d.properties.status === "Guessed" ? "guessed" : ""}`);
+        }
+
+        // Handle guess submission
+        function submitGuess() {
+            const guess = document.getElementById('guessInput').value.trim().toLowerCase();
+            
+            if (guess === "") return;
+            
+            // Find matching municipality
+            const matchingFeature = austriaData.features.find(feature => 
+                feature.properties.Name && 
+                feature.properties.Name.toLowerCase() === guess && 
+                feature.properties.status !== "Guessed"
+            );
+            
+            if (matchingFeature) {
+                const municipalityName = matchingFeature.properties.Name;
+                
+                // Check if not already guessed
+                if (!gameState.guessedMunicipalities.includes(municipalityName)) {
+                    // Add to guessed list
+                    gameState.guessedMunicipalities.push(municipalityName);
+                    
+                    // Update population covered
+                    const population = matchingFeature.properties.population || 0;
+                    gameState.populationCovered += population;
+                    gameState.percentageCovered = (gameState.populationCovered / gameState.totalPopulation) * 100;
+                    
+                    // Mark as guessed
+                    matchingFeature.properties.status = "Guessed";
+                    
+                    // Update map
+                    updateMap();
+                    
+                    // Update UI
+                    updateProgress();
+                    updateGuessedList();
+                }
+            }
+            
+            // Clear input
+            document.getElementById('guessInput').value = "";
+        }
+
+        // Update progress indicators
+        function updateProgress() {
+            const progressPercent = gameState.percentageCovered.toFixed(1);
+            document.getElementById('progressBar').style.width = progressPercent + "%";
+            document.getElementById('progressBar').textContent = progressPercent + "%";
+            document.getElementById('populationCovered').textContent = gameState.populationCovered.toLocaleString();
+        }
+
+        // Update guessed municipalities list
+        function updateGuessedList() {
+            const listElement = document.getElementById('guessedCitiesList');
+            
+            if (gameState.guessedMunicipalities.length === 0) {
+                listElement.innerHTML = "<p>None yet. Start guessing!</p>";
+                return;
+            }
+            
+            // Create list of guessed municipalities with populations
+            const guessedData = gameState.guessedMunicipalities.map(name => {
+                const feature = austriaData.features.find(f => f.properties.Name === name);
+                return {
+                    name: name,
+                    population: feature && feature.properties.population ? feature.properties.population : 0
+                };
+            });
+            
+            // Sort by population (descending)
+            guessedData.sort((a, b) => b.population - a.population);
+            
+            // Create HTML
+            listElement.innerHTML = guessedData.map(item => 
+                `<div><strong>${item.name}</strong> (${item.population.toLocaleString()})</div>`
+            ).join('');
+        }
+
+        // Reset game
+        function resetGame() {
+            // Reset game state
+            gameState.guessedMunicipalities = [];
+            gameState.populationCovered = 0;
+            gameState.percentageCovered = 0;
+            
+            // Reset municipality status
+            austriaData.features.forEach(feature => {
+                feature.properties.status = "Not Guessed";
+            });
+            
+            // Update UI
+            updateMap();
+            updateProgress();
+            updateGuessedList();
+        }
+
+        // Add event listeners
+        document.getElementById('submitGuess').addEventListener('click', submitGuess);
+        document.getElementById('guessInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') submitGuess();
+        });
+        document.getElementById('resetGame').addEventListener('click', resetGame);
+
+        // Handle window resize
+        window.addEventListener('resize', function() {
+            if (austriaData) {
+                const newWidth = document.getElementById("map-container").clientWidth;
+                const newHeight = document.getElementById("map-container").clientHeight;
+                
+                projection = d3.geoMercator().fitSize([newWidth, newHeight], austriaData);
+                path = d3.geoPath().projection(projection);
+                
+                g.selectAll("path").attr("d", path);
+            }
+        });
+
+        // Initialize the application
+        loadData();
+    </script>
+</body>
+</html>
