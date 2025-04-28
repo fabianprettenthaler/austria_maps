@@ -130,7 +130,7 @@
             try {
                 // In a real implementation, you would load your actual data here
                 // Load GeoJSON data
-                const geoResponse = await fetch('STATISTIK_AUSTRIA_GEM_20250101.geojson');
+                const geoResponse = await fetch('gemeinden_95_geo.json');
                 austriaData = await geoResponse.json();
                 
                 // Load population data
